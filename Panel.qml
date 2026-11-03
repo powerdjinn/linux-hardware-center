@@ -76,11 +76,11 @@ Panel {
   readonly property string frescoSh: "\"$HOME/.local/bin/fresco\"" 
 
   readonly property string healthText: {
-    if (dieTemp <= 0) return "Leyendo"
-    if (dieTemp < 60) return "Frio"
-    if (dieTemp < 75) return "Templado"
-    if (dieTemp < 85) return "Caliente"
-    return "Muy caliente"
+    if (dieTemp <= 0) return "Reading"
+    if (dieTemp < 60) return "Cool"
+    if (dieTemp < 75) return "Warm"
+    if (dieTemp < 85) return "Hot"
+    return "Very hot"
   }
 
   readonly property color warnColor: hot ? (bar ? bar.urgent : Color.urgent)
@@ -100,6 +100,14 @@ Panel {
     // vaciar el panel: se conserva la ultima lectura buena.
     if (Object.keys(next).length === 0) return
     root.stats = next
+  }
+
+  function sensorName(value) {
+    return ({Procesador: "CPU", Disco: "Disk", Placa: "Motherboard", Grafica: "GPU", Wifi: "Wi-Fi"})[value] || value
+  }
+
+  function profileName(value) {
+    return ({auto: "Auto", estable: "Steady", reposo: "Idle", fresco: "Cool", juego: "Gaming", trabajo: "Work"})[value] || value
   }
 
   function refresh() {
@@ -144,7 +152,7 @@ Panel {
     }
     foreground: root.warnColor
     tooltipText: root.tempMax > 0
-      ? "Lo mas caliente: " + root.tempMaxQue + " a " + root.tempMax + "°C"
+      ? "Hottest component: " + root.sensorName(root.tempMaxQue) + " at " + root.tempMax + "°C"
       : ""
     slotSize: Style.bar.iconSlot * (root.showLabel && !vertical ? 2 : 1)
     onPressed: function(b) {
@@ -217,9 +225,9 @@ Panel {
 
             Text {
               textFormat: Text.PlainText
-              text: root.perfil.toUpperCase() + (root.perfilForzado ? " (FIJO)" : "")
-                    + " · TECHO " + root.num("techo") + "%"
-                    + (root.tempMaxQue !== "" ? " · " + root.tempMaxQue.toUpperCase() : "")
+              text: (root.hayServicio ? root.profileName(root.perfil).toUpperCase() : "MONITORING") + (root.perfilForzado ? " (FIXED)" : "")
+                    + " · CPU LIMIT " + root.num("techo") + "%"
+                    + (root.tempMaxQue !== "" ? " · " + root.sensorName(root.tempMaxQue).toUpperCase() : "")
               color: Qt.darker(root.bar.foreground, 1.4)
               font.family: root.bar.fontFamily
               font.pixelSize: Style.font.caption
@@ -259,20 +267,21 @@ Panel {
           // que deja el RC6, el estado de reposo del motor grafico. Es actividad
           // real, no una estimacion: si la barra sube, la Intel esta dibujando.
           MetricBar {
-            label: "GPU Intel"
+            visible: root.str("igpu_present", "0") === "1"
+            label: "Intel GPU"
             fraction: root.num("igpu_pct") / 100
             value: root.num("igpu_pct") + "%  ·  " + root.num("igpu_freq") + " MHz"
                    + (root.dieTemp > 0 ? "  ·  " + root.dieTemp + "°C" : "")
           }
 
           MetricBar {
-            label: "Memoria"
+            label: "Memory"
             fraction: root.num("mem_pct") / 100
             value: root.str("mem_used") + " / " + root.str("mem_total") + " GB"
           }
 
           MetricBar {
-            label: "Disco"
+            label: "Disk"
             fraction: root.num("disk_pct") / 100
             value: root.str("disk_used") + " / " + root.str("disk_total") + " GB"
                    + (root.num("disk_temp") > 0 ? "  ·  " + root.num("disk_temp") + "°C" : "")
@@ -293,12 +302,13 @@ Panel {
 
           InfoPair {
             width: (parent.width - parent.spacing) / 2
-            label: "Ventilador"
-            value: root.num("fan_rpm") > 0 ? root.num("fan_rpm") + " rpm" : "Parado"
+            label: "System fan"
+            value: root.str("fan_rpm", "") === "" ? "Unavailable" : (root.num("fan_rpm") > 0 ? root.num("fan_rpm") + " rpm" : "Stopped")
           }
           InfoPair {
             width: (parent.width - parent.spacing) / 2
-            label: "Bateria"
+            visible: root.str("bat_pct", "") !== ""
+            label: "Battery"
             value: root.str("bat_pct") + "%"
                    + (root.num("bat_watts") > 0 ? " · " + root.str("bat_watts") + " W" : "")
           }
@@ -314,35 +324,40 @@ Panel {
           spacing: Style.space(10)
 
           PanelSectionHeader {
-            text: "RTX 3050"
+            text: root.str("nv_name", "NVIDIA GPU")
             foreground: root.bar.foreground
             fontFamily: root.bar.fontFamily
           }
 
           InfoPair {
-            label: "Estado"
+            label: "Status"
             value: root.nvDormida
-                   ? "Dormida · no gasta"
+                   ? "Sleeping"
                    : (root.num("nv_temp") > 0
                       ? root.num("nv_temp") + "°C · " + root.str("nv_watts") + " W"
-                      : "Despierta")
+                      : "Active")
           }
 
           // El aviso que importa: despierta sin que nadie la use es calor
           // regalado bajo el teclado.
           InfoPair {
-            label: "En uso por"
+            label: "GPU fan"
+            value: root.str("nv_fan_pct", "") === "" ? "Unavailable" : root.str("nv_fan_pct") + "%"
+          }
+
+          InfoPair {
+            label: "Device handles"
             value: root.nvDesperdicio
-                   ? "NADIE — despierta para nada"
-                   : (root.nvDormida ? "—" : root.nvClientes + " proceso(s)")
+                   ? "None"
+                   : (root.nvDormida ? "—" : root.nvClientes + " open handle(s)")
           }
 
           InfoPair {
             visible: root.hayModoGpu
-            label: "Apps nuevas van a"
-            value: root.gpuModo === "intel"  ? "Intel (ahorro)"
-                 : root.gpuModo === "nvidia" ? "RTX (forzado)"
-                 : root.gpuModo === "auto"   ? "Auto — para jugar"
+            label: "New apps use"
+            value: root.gpuModo === "intel"  ? "Intel (power saving)"
+                 : root.gpuModo === "nvidia" ? "NVIDIA (forced)"
+                 : root.gpuModo === "auto"   ? "Auto"
                  : root.gpuModo
           }
 
@@ -355,7 +370,7 @@ Panel {
               model: [
                 { m: "intel",  t: "Intel",  i: "󰢮" },
                 { m: "auto",   t: "Auto",   i: "󰾆" },
-                { m: "nvidia", t: "RTX",    i: "󰾲" }
+                { m: "nvidia", t: "NVIDIA",    i: "󰾲" }
               ]
               Button {
                 required property var modelData
@@ -384,15 +399,15 @@ Panel {
           spacing: Style.space(10)
 
           PanelSectionHeader {
-            text: "PERFIL TERMICO"
+            text: "THERMAL PROFILE"
             foreground: root.bar.foreground
             fontFamily: root.bar.fontFamily
           }
 
           InfoPair {
             visible: root.hayServicio
-            label: "Ahora"
-            value: root.perfil + (root.perfilForzado ? " · fijado a mano" : " · automatico")
+            label: "Current"
+            value: root.profileName(root.perfil) + (root.perfilForzado ? " · manual" : " · automatic")
           }
 
           Column {
@@ -400,19 +415,20 @@ Panel {
             width: parent.width
             spacing: Style.spacing.labelGap
             InfoValue {
-              text: "El servicio no esta instalado."
+              text: "Thermal control service is not installed."
               width: parent.width
               wrapMode: Text.WordWrap
             }
             InfoLabel {
-              text: "Sin el solo se puede mirar: los perfiles y la curva del "
-                    + "ventilador necesitan permisos. Pulsa Centro para ver como."
+              text: "Monitoring only. Profiles and fan control require the "
+                    + "optional service."
               width: parent.width
               wrapMode: Text.WordWrap
             }
           }
 
           Row {
+            visible: root.hayServicio
             width: parent.width
             spacing: Style.space(8)
 
@@ -421,9 +437,9 @@ Panel {
               // lo que este abierto. Estos son los que se fijan a mano.
               model: [
                 { m: "auto",    t: "Auto" },
-                { m: "estable", t: "Estable" },
-                { m: "reposo",  t: "Reposo" },
-                { m: "fresco",  t: "Fresco" }
+                { m: "estable", t: "Steady" },
+                { m: "reposo",  t: "Idle" },
+                { m: "fresco",  t: "Cool" }
               ]
               Button {
                 required property var modelData

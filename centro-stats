@@ -92,18 +92,17 @@ if nvme=$(hwmon_by_name nvme); then
 fi
 
 # --- Ventiladores (MSI expone fan1..fan4; solo interesan los que giran) ---
-for chip in msi_wmi_platform asus_wmi_sensors thinkpad; do
-  if fan=$(hwmon_by_name "$chip"); then
-    max=0
-    for f in "$fan"/fan*_input; do
-      [[ -r "$f" ]] || continue
-      v=$(<"$f")
-      (( v > max )) && max=$v
-    done
-    emit fan_rpm "$max"
-    break
-  fi
+fan_max=""
+for fan in /sys/class/hwmon/hwmon*; do
+  for f in "$fan"/fan*_input; do
+    [[ -r "$f" ]] || continue
+    v=$(cat "$f" 2>/dev/null) || continue
+    [[ "$v" =~ ^[0-9]+$ ]] || continue
+    [[ -z "$fan_max" ]] && fan_max=$v
+    (( v > fan_max )) && fan_max=$v
+  done
 done
+[[ -n "$fan_max" ]] && emit fan_rpm "$fan_max"
 
 # --- Bateria ---
 for b in /sys/class/power_supply/BAT*; do
@@ -134,6 +133,7 @@ for d in /sys/class/drm/card*; do
 done
 
 if [[ -n "$igpu" ]]; then
+  emit igpu_present 1
   # gt_act_freq_mhz es la frecuencia real de este instante y vale 0 en cuanto la
   # GPU entra en RC6; gt_cur_freq_mhz es la que el driver tiene pedida y no baja
   # a cero. Se muestra la real, y la pedida solo cuando la real es 0, para no
@@ -190,11 +190,22 @@ emit nv_estado "$gpu_run"
 emit nv_dormida_ms "$(cat "$GPU_PCI/power/runtime_suspended_time" 2>/dev/null || echo 0)"
 emit nv_activa_ms  "$(cat "$GPU_PCI/power/runtime_active_time" 2>/dev/null || echo 0)"
 
-if [[ -n "$GPU_PCI" && "$gpu_run" != suspended ]] && command -v nvidia-smi >/dev/null 2>&1; then
-  read -r nv_t nv_w < <(nvidia-smi --query-gpu=temperature.gpu,power.draw \
-      --format=csv,noheader,nounits 2>/dev/null | tr -d ' ' | tr ',' ' ')
-  [[ -n "${nv_t:-}" ]] && emit nv_temp "$nv_t"
-  [[ -n "${nv_w:-}" ]] && emit nv_watts "$nv_w"
+# Read only the selected NVIDIA card; sleeping cards remain asleep.
+if [[ -n "$GPU_PCI" && "$(cat "$GPU_PCI/vendor")" == 0x10de ]]; then
+  gpu_name=$(LC_ALL=C lspci -s "${GPU_PCI##*/}" 2>/dev/null | sed -n 's/.*\[\(.*\)\].*/\1/p')
+  [[ -n "$gpu_name" ]] && emit nv_name "$gpu_name"
+  if [[ "$gpu_run" != suspended ]] && command -v nvidia-smi >/dev/null 2>&1; then
+    IFS=, read -r nv_name nv_t nv_w nv_fan < <(nvidia-smi -i "${GPU_PCI##*/}" \
+      --query-gpu=name,temperature.gpu,power.draw,fan.speed --format=csv,noheader,nounits 2>/dev/null)
+    nv_name="${nv_name#"${nv_name%%[![:space:]]*}"}"
+    [[ -n "$nv_name" ]] && emit nv_name "$nv_name"
+    nv_t="${nv_t//[[:space:]]/}"
+    nv_w="${nv_w//[[:space:]]/}"
+    nv_fan="${nv_fan//[[:space:]]/}"
+    [[ "$nv_t" =~ ^[0-9]+$ ]] && emit nv_temp "$nv_t"
+    [[ "$nv_w" =~ ^[0-9]+([.][0-9]+)?$ ]] && emit nv_watts "$nv_w"
+    [[ "$nv_fan" =~ ^[0-9]+$ ]] && emit nv_fan_pct "$nv_fan"
+  fi
 fi
 
 # Cuantos procesos la tienen abierta: distingue "despierta trabajando" de
@@ -246,7 +257,7 @@ for d in /sys/class/hwmon/hwmon*; do
   done
 done
 # La grafica dedicada tambien cuenta, si esta despierta.
-if [[ -n "${nv_t:-}" ]] && (( nv_t > TMAX )); then TMAX=$nv_t; TMAX_QUE="Grafica"; fi
+if [[ "${nv_t:-}" =~ ^[0-9]+$ ]] && (( nv_t > TMAX )); then TMAX=$nv_t; TMAX_QUE="Grafica"; fi
 for clave in "${!VISTOS[@]}"; do emit "$clave" "${VISTOS[$clave]}"; done
 emit temp_max "$TMAX"
 emit temp_max_que "$TMAX_QUE"
